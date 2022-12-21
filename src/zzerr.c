@@ -1,7 +1,8 @@
-#include <zzsh.h>
+#include <zzerr.h>
+#include <zzio.h>
 
 static int errno = 0;
-static const char* errarg = NULL;
+static const char* errarg = ((void*)0);
 
 int zzerr_get(void)
 {
@@ -35,8 +36,13 @@ int zzerr_print(int error, const char* exe)
         "directory exists",
         "file exists",
         "command not found",
-        "illegal option"
+        "illegal option",
+        "too many arguments"
     };
 
-    return (error < 1 || error > 16) ? -1 : zzio_print("%s: %s: %s\n", exe, errmsg[error - 1], errarg ? errarg : "");
+    if (error < 1 || (unsigned long)error >= sizeof(errmsg) / sizeof(errmsg[0])) {
+        return error;
+    } 
+    
+    return !zzio_print("%s: %s: %s\n", exe, errmsg[error - 1], errarg ? errarg : "");
 }

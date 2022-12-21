@@ -1,4 +1,4 @@
-#include <zzsh.h>
+#include <zzargs.h>
 #include <string.h>
 
 int zzgetargs(char* str, char** args, const char* div)
@@ -8,16 +8,6 @@ int zzgetargs(char* str, char** args, const char* div)
     while (str) {
         args[i++] = str;
         str = strtok(NULL, div);
-    }
-    args[i] = NULL;
-    return i;
-}
-
-int zzdirargs(const struct tnode_t* node, char** args)
-{
-    int i;
-    for (i = 0; node->children[i]; ++i) {
-        args[i] = *(char**)node->children[i]->data;
     }
     args[i] = NULL;
     return i;

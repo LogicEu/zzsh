@@ -1,89 +1,125 @@
-#include <zzsh.h>
+#ifndef ZZ_SYSTEM_C
+#define ZZ_SYSTEM_C
+
+typedef struct tnode_t ZZDIR;
+
+#include <zzsys.h>
+#include <zznode.h>
+#include <zzerr.h>
+#include <zzio.h>
+#include <zzargs.h>
 #include <stdlib.h>
 #include <string.h>
+#include <tree.h>
 
-static struct tnode_t* syscurr = NULL;
+static ZZDIR* syscurr = NULL;
 
-static struct tnode_t* zzsys_stdroot(void)
+static ZZDIR* zzdir_pushf(ZZDIR* dir, const char* name, const void* data, size_t len)
 {
-    char* dirname;
-    struct tnode_t* root;
-    
-    dirname = strdup("~");
-    root = tnode_create(&dirname, sizeof(char*));
+    struct zznode node = zznode_create(name, data, len);
+    ZZDIR* newdir = tnode_create(&node, sizeof(struct zznode));
+    tnode_push(dir, newdir);
+    return newdir;
+}
 
-    dirname = strdup(".");
-    tnode_push(root, tnode_create(&dirname, sizeof(char*)));
-    
+static ZZDIR* zzdir_pushd(ZZDIR* dir, const char* name)
+{
+    ZZDIR* newdir = zzdir_pushf(dir, name, NULL, 0);
+    zzdir_pushf(newdir, ".", NULL, 0);
+    return newdir;
+}
+
+static ZZDIR* zzdir_stdroot(void)
+{
+    struct zznode node = zznode_create("~", NULL, 0);
+    ZZDIR* root = tnode_create(&node, sizeof(struct zznode));
+    zzdir_pushf(root, ".", NULL, 0);
     return root;
 }
 
-static void zzsys_free(struct tnode_t* node)
+static void zzdir_free(ZZDIR* dir)
 {
     size_t i;
-    for (i = 0; node->children[i]; ++i) {
-        zzsys_free(node->children[i]);
+    for (i = 0; dir->children[i]; ++i) {
+        zzdir_free(dir->children[i]);
     }
     
-    free(*(char**)node->data);
-    free(node->data);
-    memset(node, 0, sizeof(struct tnode_t));
-    free(node);
+    zznode_free(dir->data);
+    free(dir->data);
+    memset(dir, 0, sizeof(ZZDIR));
+    free(dir);
 }
 
-void zzinit(void)
+void zzsys_init(void)
 {
-    syscurr = zzsys_stdroot();
+    syscurr = zzdir_stdroot();
 }
 
-int zzexit(void)
+int zzsys_exit(void)
 {
-    zzsys_free(zzsys_root());
+    zzdir_free(zzdir_root());
     return EXIT_SUCCESS;
 }
 
-struct tnode_t* zzsys_curr(void)
+ZZDIR* zzdir_curr(void)
 {
     return syscurr;
 }
 
-void zzsys_set(struct tnode_t* node)
+int zzdir_childcount(const ZZDIR* dir)
 {
-    syscurr = node;
+    int i;
+    for (i = 0; dir->children[i]; ++i);
+    return i;
 }
 
-struct tnode_t* zzsys_root(void)
+void zzdir_set(ZZDIR* dir)
 {
-    struct tnode_t* node = zzsys_curr();
-    while (node->parent) {
-        node = node->parent;
+    if (dir->children[0]) {
+        syscurr = dir;
     }
-    return node;
 }
 
-struct tnode_t* zzsys_search(char* arg, const int off)
+ZZDIR* zzdir_root(void)
+{
+    ZZDIR* dir = zzdir_curr();
+    while (dir->parent) {
+        dir = dir->parent;
+    }
+    return dir;
+}
+
+void* zzdir_data(const ZZDIR* dir)
+{
+    return zznode_data(dir->data);
+}
+
+ZZDIR* zzdir_search(const char* arg, const int off)
 {
     static const char div[] = "/", parent[] = "..", root[] = "~";
 
     int i, j;
-    char* args[ZZ_ARG_COUNT];
-    const int count = zzgetargs(arg, args, div);
-    struct tnode_t* node = zzsys_curr();
+    char* args[ZZ_ARG_COUNT], buf[ZZ_ARG_SIZE];
+    ZZDIR* dir = zzdir_curr();
+
+    strcpy(buf, arg);
+    zzgetargs(buf, args, div);
 
     if (!arg || !*arg) {
         return NULL;
     }
     
-    for (i = 0; args[i + off]; ++i) {
+    for (i = off; args[i]; ++i) {
         if (!memcmp(args[i], parent, sizeof(parent) - 1)) {
-            node = node->parent;
+            dir = dir->parent;
         } else if (!memcmp(args[i], root, sizeof(root) - 1)) {
-            node = tnode_root(node);
+            dir = tnode_root(dir);
         } else if (!(args[i][0] == '.' && !args[i][1])) {
             int found = 0;
-            for (j = 0; node->children[j]; ++j) {
-                if (!strcmp(args[i], *(char**)node->children[j]->data)) {
-                    node = node->children[j];
+            for (j = 0; dir->children[j]; ++j) {
+                const struct zznode* node = dir->children[j]->data;
+                if (!strcmp(args[i], node->data)) {
+                    dir = dir->children[j];
                     ++found;
                     break;
                 }
@@ -94,11 +130,225 @@ struct tnode_t* zzsys_search(char* arg, const int off)
         }
     }
 
-    args[0] = zzstruntok(args[0], count, '/');
-    return node;
+    return dir;
 }
 
-char* zzsys_path_name(const char* path)
+const char* zzdir_name(const ZZDIR* dir)
+{
+    return zznode_name(dir->data);
+}
+
+void zzdir_rename(ZZDIR* dir, const char* name)
+{
+    zznode_rename(dir->data, name);
+}
+
+int zzsys_mkfile(const char* arg)
+{
+    int i;
+    const char* dirname;
+    struct zznode node;
+    ZZDIR* dir = zzdir_search(arg, 1);
+
+    if (!dir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, arg);
+    } else if (!dir->children[0]) {
+        return zzerr_set(ZZ_ERR_NOT_A_DIR, arg);
+    }
+    
+    dirname = zzpath_name(arg);
+    for (i = 0; dir->children[i]; ++i) {
+        node = *(struct zznode*)dir->children[i]->data;
+        if (!strcmp(dirname, node.data)) {
+            return zzerr_set(ZZ_ERR_FILE_EXISTS, arg);
+        }
+    }
+
+    zzdir_pushf(dir, dirname, NULL, 0);
+    return EXIT_SUCCESS;
+}
+
+int zzsys_mkdir(const char* arg)
+{
+    int i;
+    const char* dirname;
+    struct zznode node;
+    ZZDIR* dir = zzdir_search(arg, 1);
+
+    if (!dir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, arg);
+    }
+
+    if (!dir->children[0]) {
+        return zzerr_set(ZZ_ERR_NOT_A_DIR, arg);
+    }
+
+    dirname = zzpath_name(arg);
+    for (i = 0; dir->children[i]; ++i) {
+        node = *(struct zznode*)dir->children[i]->data;
+        if (!strcmp(dirname, node.data)) {
+            return zzerr_set(ZZ_ERR_DIR_EXISTS, arg);
+        }
+    }
+
+    zzdir_pushd(dir, dirname);
+    return EXIT_SUCCESS;
+}
+
+int zzsys_rm(const char* arg, const int rec)
+{
+    int i;
+    ZZDIR* dir = zzdir_search(arg, 0), *parent;
+
+    if (!dir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, arg);
+    }
+    
+    if (!rec && dir->children[0]) {
+        return zzerr_set(ZZ_ERR_IS_A_DIR, arg);
+    }
+    
+    if (!dir->parent) {
+        return zzerr_set(ZZ_ERR_NOT_PERMITED, arg);
+    }
+    
+    parent = dir->parent;
+    for (i = 0; parent->children[i] != dir; ++i);
+
+    zznode_free(dir->data);
+    tnode_remove(parent, i);
+    
+    return EXIT_SUCCESS;
+}
+
+int zzsys_chdir(const char* arg)
+{
+    static ZZDIR* prev = NULL;
+
+    ZZDIR* dir;
+    if (!arg) {
+        dir = zzdir_root();
+    } else if (arg[0] == '-' && !arg[1]) {
+        if (!prev) {
+            return EXIT_SUCCESS;
+        }
+        dir = prev;
+    } else {
+        dir = zzdir_search(arg, 0);
+    }
+
+    if (!dir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, arg);
+    }
+    
+    if (!dir->children[0]) {
+        return zzerr_set(ZZ_ERR_NOT_A_DIR, arg);
+    }
+
+    prev = zzdir_curr();
+    zzdir_set(dir);
+
+    return EXIT_SUCCESS;
+}
+
+int zzsys_move(const char* from, const char* to)
+{
+    int i, unnamed = 0, index = 0;
+    ZZDIR *mvdir, *parent, *dir = zzdir_search(from, 0);
+
+    if (!dir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, from);
+    }
+    
+    if (!dir->parent) {
+        return zzerr_set(ZZ_ERR_NOT_PERMITED, from);
+    }
+
+    mvdir = zzdir_search(to, unnamed);    
+    if (!mvdir) {
+        mvdir = zzdir_search(to, ++unnamed);    
+    }
+
+    if (!mvdir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, to);
+    }
+    
+    if (!mvdir->children[0]) {
+        return zzerr_set(ZZ_ERR_NOT_A_DIR, to);
+    }
+
+    parent = dir->parent;
+    for (i = 0; parent->children[i]; ++i) {
+        if (parent->children[i] == dir) {
+            index = i;
+        }
+    }
+
+    memmove(
+        parent->children + index, 
+        parent->children + index + 1,
+        (i - index) * sizeof(ZZDIR*)
+    );
+
+    zzdir_rename(dir, zzpath_name(unnamed ? to : from));
+    tnode_push(mvdir, dir);
+    return EXIT_SUCCESS;
+}
+
+static void zzsys_copy_tree(ZZDIR* dst, const ZZDIR* src)
+{
+    int i;
+    ZZDIR *dir;
+    struct zznode node;
+    for (i = 0; src->children[i]; ++i) {
+        node = zznode_copy(src->children[i]->data);
+        dir = tnode_create(&node, sizeof(struct zznode));
+        zzsys_copy_tree(dir, src->children[i]);
+        tnode_push(dst, dir);
+    }
+}
+
+int zzsys_copy(const char* from, const char* to, const int rec)
+{
+    int unnamed = 0;
+    struct zznode node;
+    ZZDIR *cpdir, *copy, *dir = zzdir_search(from, 0);
+
+    if (!dir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, from);
+    } 
+    
+    if (dir->children[0] && !rec) {
+        return zzerr_set(ZZ_ERR_IS_A_DIR, from);
+    }
+    
+    if (!dir->parent) {
+        return zzerr_set(ZZ_ERR_NOT_PERMITED, from);
+    }
+
+    cpdir = zzdir_search(to, unnamed);
+    if (!cpdir) {
+        cpdir = zzdir_search(to, ++unnamed);
+    }
+
+    if (!cpdir) {
+        return zzerr_set(ZZ_ERR_NO_SUCH_FD, to);
+    }
+    
+    if (!cpdir->children[0]) {
+        return zzerr_set(ZZ_ERR_NOT_A_DIR, to);
+    }
+
+    node = zznode_copy(dir->data);
+    copy = tnode_create(&node, sizeof(struct zznode));
+    zzsys_copy_tree(copy, dir);
+    zzdir_rename(copy, zzpath_name(unnamed ? to : from));
+    tnode_push(cpdir, copy);
+
+    return EXIT_SUCCESS;
+}
+
+char* zzpath_name(const char* path)
 {
     size_t i, j;
     for (i = 0, j = 0; path[i]; ++i) {
@@ -109,19 +359,21 @@ char* zzsys_path_name(const char* path)
     return (char*)(size_t)(path + j);
 }
 
-char* zzsys_path(struct tnode_t* node)
+char* zzpath(const ZZDIR* dir)
 {
     static char buf[0xfff];
     
     const char* s;
     size_t len, blen;
 
-    strcpy(buf, *(char**)node->data);
+    const struct zznode* node = dir->data;
+    strcpy(buf, node->data);
     blen = strlen(buf);
 
-    while (node->parent) {
-        node = node->parent;
-        s = *(char**)node->data;
+    while (dir->parent) {
+        dir = dir->parent;
+        node = dir->data;
+        s = node->data;
         len = strlen(s);
         memmove(buf + len + 1, buf, blen + 1);
         memcpy(buf, s, len);
@@ -131,3 +383,17 @@ char* zzsys_path(struct tnode_t* node)
     
     return buf;
 }
+
+int zzdirargs(const ZZDIR* dir, char** args)
+{
+    int i;
+    const struct zznode* node;
+    for (i = 0; dir->children[i]; ++i) {
+        node = dir->children[i]->data;
+        args[i] = node->data;
+    }
+    args[i] = NULL;
+    return i;
+}
+
+#endif /* ZZ_SYSTEM_C */
